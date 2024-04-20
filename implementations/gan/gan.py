@@ -114,10 +114,7 @@ optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt
 
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-# ----------
 #  Training
-# ----------
-
 for epoch in range(opt.n_epochs):
     for i, (imgs, _) in enumerate(dataloader):
 
@@ -146,10 +143,7 @@ for epoch in range(opt.n_epochs):
         g_loss.backward()
         optimizer_G.step()
 
-        # ---------------------
         #  Train Discriminator
-        # ---------------------
-
         optimizer_D.zero_grad()
 
         # Measure discriminator's ability to classify real from generated samples

@@ -65,7 +65,6 @@ class Generator(nn.Module):
         img = img.view(img.size(0), *img_shape)
         return img
 
-
 class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
@@ -105,6 +104,7 @@ if cuda:
 
 # Configure data loader
 os.makedirs("../../data/mnist", exist_ok=True)
+# TODO change to tensor
 dataloader = torch.utils.data.DataLoader(
     datasets.MNIST(
         "../../data/mnist",
@@ -158,7 +158,7 @@ for epoch in range(opt.n_epochs):
         z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
         gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, batch_size)))
 
-        # Generate a batch of images
+        # Generate a batch of data
         gen_imgs = generator(z, gen_labels)
 
         # Loss measures generator's ability to fool the discriminator
@@ -171,11 +171,11 @@ for epoch in range(opt.n_epochs):
         #  Train Discriminator
         optimizer_D.zero_grad()
 
-        # Loss for real images
+        # Loss for real data
         validity_real = discriminator(real_imgs, labels)
         d_real_loss = adversarial_loss(validity_real, valid)
 
-        # Loss for fake images
+        # Loss for fake data
         validity_fake = discriminator(gen_imgs.detach(), gen_labels)
         d_fake_loss = adversarial_loss(validity_fake, fake)
 
