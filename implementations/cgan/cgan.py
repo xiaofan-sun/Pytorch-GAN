@@ -35,6 +35,16 @@ img_shape = (opt.channels, opt.img_size, opt.img_size)
 
 cuda = True if torch.cuda.is_available() else False
 
+def sample_image(n_row, batches_done):
+    """Saves a grid of generated digits ranging from 0 to n_classes"""
+    # Sample noise
+    z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
+    # Get labels ranging from 0 to n_classes for n rows
+    labels = np.array([num for _ in range(n_row) for num in range(n_row)])
+    labels = Variable(LongTensor(labels))
+    gen_imgs = generator(z, labels)
+
+    save_image(gen_imgs.data, "results/%d.png" % batches_done, nrow=n_row, normalize=True)
 
 class Generator(nn.Module):
     def __init__(self):
@@ -89,7 +99,6 @@ class Discriminator(nn.Module):
         validity = self.model(d_in)
         return validity
 
-
 # Loss functions
 adversarial_loss = torch.nn.MSELoss()
 
@@ -124,18 +133,6 @@ optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt
 
 FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
-
-
-def sample_image(n_row, batches_done):
-    """Saves a grid of generated digits ranging from 0 to n_classes"""
-    # Sample noise
-    z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
-    # Get labels ranging from 0 to n_classes for n rows
-    labels = np.array([num for _ in range(n_row) for num in range(n_row)])
-    labels = Variable(LongTensor(labels))
-    gen_imgs = generator(z, labels)
-    save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
-
 
 #  Training
 for epoch in range(opt.n_epochs):
