@@ -2,17 +2,17 @@
 
 import warnings
 
+import sys
 import numpy as np
 import pandas as pd
 import torch
 from torch import optim
 from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional
 from tqdm import tqdm
+from base import BaseSynthesizer, random_state
 
-from ctgan.data_sampler import DataSampler
-from ctgan.data_transformer import DataTransformer
-from ctgan.synthesizers.base import BaseSynthesizer, random_state
-
+from data_sampler import DataSampler
+from data_transformer import DataTransformer
 
 class Discriminator(Module):
     """Discriminator for the CTGAN."""
@@ -54,8 +54,12 @@ class Discriminator(Module):
     def forward(self, input_):
         """Apply the Discriminator to the `input_`."""
         assert input_.size()[0] % self.pac == 0
+        # print("input",input_)
+        print("input_.size():",input_.size())
+        # print("input_.view(-1, self.pacdim)",input_.view(-1, self.pacdim))
+        print("input_.view(-1, self.pacdim).size():",input_.view(-1, self.pacdim).size())
         return self.seq(input_.view(-1, self.pacdim))
-
+    
 
 class Residual(Module):
     """Residual layer for the CTGAN."""
@@ -163,18 +167,21 @@ class CTGAN(BaseSynthesizer):
         self._epochs = epochs
         self.pac = pac
 
-        if not cuda or not torch.cuda.is_available():
-            device = 'cpu'
-        elif isinstance(cuda, str):
-            device = cuda
-        else:
-            device = 'cuda'
+        # if not cuda or not torch.cuda.is_available():
+        #     device = 'cpu'
+        # elif isinstance(cuda, str):
+        #     device = cuda
+        # else:
+        #     device = 'cuda'
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        print("device:",device)
 
         self._device = torch.device(device)
 
         self._transformer = None
         self._data_sampler = None
         self._generator = None
+        self._discriminator = None
         self.loss_values = None
 
     @staticmethod
@@ -289,6 +296,8 @@ class CTGAN(BaseSynthesizer):
                 contain the integer indices of the columns. Otherwise, if it is
                 a ``pandas.DataFrame``, this list should contain the column names.
         """
+        print("Fit the CTGAN Synthesizer models to the training data.")
+        # 验证离散列
         self._validate_discrete_columns(train_data, discrete_columns)
 
         if epochs is None:
@@ -300,37 +309,49 @@ class CTGAN(BaseSynthesizer):
                 DeprecationWarning
             )
 
+        # 根据数据的特征（连续或离散）来拟合相应的转换器，将原始训练数据转换为模型可用的格式
+        print("create DataTransformer")
         self._transformer = DataTransformer()
+        # print("len(train_data):",len(train_data.iloc[0]))
         self._transformer.fit(train_data, discrete_columns)
-
+        print("convert train_data to Transformer")
+        # print("len(train_data):",len(train_data.iloc[0]))
         train_data = self._transformer.transform(train_data)
-
+        # print("len(train_data):",len(train_data[0]))
+        
+        print("create DataSampler")
+        # 从训练数据中采样生成假数据
         self._data_sampler = DataSampler(
             train_data,
             self._transformer.output_info_list,
             self._log_frequency)
 
         data_dim = self._transformer.output_dimensions
-
+        
+        print("create Generator")
         self._generator = Generator(
             self._embedding_dim + self._data_sampler.dim_cond_vec(),
             self._generator_dim,
             data_dim
         ).to(self._device)
 
-        discriminator = Discriminator(
+        print("create Discriminator")
+        print("data_dim:",data_dim)
+        print("self._data_sampler.dim_cond_vec():",self._data_sampler.dim_cond_vec())
+        self._discriminator = Discriminator(
             data_dim + self._data_sampler.dim_cond_vec(),
             self._discriminator_dim,
             pac=self.pac
         ).to(self._device)
 
+        print("optimize")
         optimizerG = optim.Adam(
             self._generator.parameters(), lr=self._generator_lr, betas=(0.5, 0.9),
             weight_decay=self._generator_decay
         )
 
         optimizerD = optim.Adam(
-            discriminator.parameters(), lr=self._discriminator_lr,
+            self._discriminator.parameters(), lr=self._discriminator_lr,
             betas=(0.5, 0.9), weight_decay=self._discriminator_decay
         )
 
@@ -342,59 +363,74 @@ class CTGAN(BaseSynthesizer):
         epoch_iterator = tqdm(range(epochs), disable=(not self._verbose))
         if self._verbose:
             description = 'Gen. ({gen:.2f}) | Discrim. ({dis:.2f})'
-            epoch_iterator.set_description(description.format(gen=0, dis=0))
+            # epoch_iterator.set_description(description.format(gen=0, dis=0))
+            epoch_iterator.set_description(description.format(gen=0.0, dis=0.0))
 
         steps_per_epoch = max(len(train_data) // self._batch_size, 1)
         for i in epoch_iterator:
             for id_ in range(steps_per_epoch):
-
                 for n in range(self._discriminator_steps):
+                    # 从高斯分布中生成随机噪声
                     fakez = torch.normal(mean=mean, std=std)
 
+                    # 从条件向量采样器中获取条件向量
                     condvec = self._data_sampler.sample_condvec(self._batch_size)
                     if condvec is None:
+                        # 没有条件向量，从训练数据中采样实际数据
                         c1, m1, col, opt = None, None, None, None
                         real = self._data_sampler.sample_data(
                             train_data, self._batch_size, col, opt)
                     else:
+                        # 有条件向量，将条件向量转换为张量，并将其与随机噪声拼接
                         c1, m1, col, opt = condvec
                         c1 = torch.from_numpy(c1).to(self._device)
                         m1 = torch.from_numpy(m1).to(self._device)
                         fakez = torch.cat([fakez, c1], dim=1)
-
-                        perm = np.arange(self._batch_size)
+                        perm = np.arange(self._batch_size) # 一个随机排列的索引数组，用于对训练数据的列进行重新排序
                         np.random.shuffle(perm)
+                        # 通过 DataSampler 从训练数据中采样实际数据，并根据之前的随机排列获取相应的条件向量。
                         real = self._data_sampler.sample_data(
                             train_data, self._batch_size, col[perm], opt[perm])
                         c2 = c1[perm]
 
+                    # 通过生成器生成假样本，并将其输入到激活函数中进行激活
                     fake = self._generator(fakez)
                     fakeact = self._apply_activate(fake)
 
+                    # 将实际数据转换为张量
                     real = torch.from_numpy(real.astype('float32')).to(self._device)
 
+                    # 根据条件向量是否存在，将假样本和实际样本与条件向量进行拼接
                     if c1 is not None:
                         fake_cat = torch.cat([fakeact, c1], dim=1)
                         real_cat = torch.cat([real, c2], dim=1)
+                        # print("real.size()", real.size())
+                        # print("c2.size()", c2.size())
+                        # print("real_cat.size()", real_cat.size())
                     else:
                         real_cat = real
                         fake_cat = fakeact
 
-                    y_fake = discriminator(fake_cat)
-                    y_real = discriminator(real_cat)
+                    # 将拼接后的假样本和实际样本输入到判别器中，获取判别器对假样本和实际样本的输出。
+                    y_fake = self._discriminator(fake_cat)
+                    y_real = self._discriminator(real_cat)
 
-                    pen = discriminator.calc_gradient_penalty(
+                    # 计算梯度惩罚和判别器的损失
+                    pen = self._discriminator.calc_gradient_penalty(
                         real_cat, fake_cat, self._device, self.pac)
                     loss_d = -(torch.mean(y_real) - torch.mean(y_fake))
 
+                    # 对判别器的梯度进行反向传播和优化
                     optimizerD.zero_grad(set_to_none=False)
                     pen.backward(retain_graph=True)
                     loss_d.backward()
                     optimizerD.step()
 
+                # 再次生成随机噪声和条件向量
                 fakez = torch.normal(mean=mean, std=std)
                 condvec = self._data_sampler.sample_condvec(self._batch_size)
 
+                # 判断是否需要处理条件向量
                 if condvec is None:
                     c1, m1, col, opt = None, None, None, None
                 else:
@@ -403,14 +439,17 @@ class CTGAN(BaseSynthesizer):
                     m1 = torch.from_numpy(m1).to(self._device)
                     fakez = torch.cat([fakez, c1], dim=1)
 
+                # 通过生成器生成假样本，并将其输入到激活函数中进行激活
                 fake = self._generator(fakez)
                 fakeact = self._apply_activate(fake)
 
+                # 根据条件向量是否存在，将假样本和条件向量进行拼接，并将拼接后的样本输入到判别器中，获取判别器对假样本的输出
                 if c1 is not None:
-                    y_fake = discriminator(torch.cat([fakeact, c1], dim=1))
+                    y_fake = self._discriminator(torch.cat([fakeact, c1], dim=1))
                 else:
-                    y_fake = discriminator(fakeact)
+                    y_fake = self._discriminator(fakeact)
 
+                # 计算条件损失和生成器的损失
                 if condvec is None:
                     cross_entropy = 0
                 else:
@@ -418,6 +457,7 @@ class CTGAN(BaseSynthesizer):
 
                 loss_g = -torch.mean(y_fake) + cross_entropy
 
+                # 对生成器的梯度进行反向传播和优化
                 optimizerG.zero_grad(set_to_none=False)
                 loss_g.backward()
                 optimizerG.step()
@@ -425,11 +465,13 @@ class CTGAN(BaseSynthesizer):
             generator_loss = loss_g.detach().cpu().item()
             discriminator_loss = loss_d.detach().cpu().item()
 
+            # 记录生成器损失和判别器损失到 epoch_loss_df 数据帧中
             epoch_loss_df = pd.DataFrame({
                 'Epoch': [i],
                 'Generator Loss': [generator_loss],
                 'Discriminator Loss': [discriminator_loss]
             })
+            print("epoch:{}  Generator Loss:{}  Discriminator Loss:{}".format(epoch_loss_df['Epoch'].values[0],epoch_loss_df['Generator Loss'].values[0],epoch_loss_df['Discriminator Loss'].values[0]))
             if not self.loss_values.empty:
                 self.loss_values = pd.concat(
                     [self.loss_values, epoch_loss_df]
@@ -441,13 +483,15 @@ class CTGAN(BaseSynthesizer):
                 epoch_iterator.set_description(
                     description.format(gen=generator_loss, dis=discriminator_loss)
                 )
+        
 
     @random_state
     def sample(self, n, condition_column=None, condition_value=None):
         """Sample data similar to the training data.
 
         Choosing a condition_column and condition_value will increase the probability of the
-        discrete condition_value happening in the condition_column.
+        discrete condition_value happening in the condition_column. 
+        在生成合成数据时，通过指定条件列和条件值，使生成的数据中特定条件值出现的概率更高。
 
         Args:
             n (int):
@@ -496,6 +540,56 @@ class CTGAN(BaseSynthesizer):
         data = data[:n]
 
         return self._transformer.inverse_transform(data)
+
+    def predict(self, test_data, discrete_columns=()):
+        """Predict test_data using the trained discriminator.
+
+        Args:
+            test_data (numpy.ndarray or pandas.DataFrame):
+                Test data to be discriminatd by the discriminator.
+                It must be a 2-dimensional numpy array or a pandas.DataFrame.
+            discrete_columns (list-like):
+                List of discrete columns to be used to generate the Conditional
+                Vector. If ``test_data`` is a Numpy array, this list should
+                contain the integer indices of the columns. Otherwise, if it is
+                a ``pandas.DataFrame``, this list should contain the column names.
+
+        Returns:
+            numpy.ndarray
+        """
+
+        print("predicting")
+        # 将原始测试数据转换为模型可用的格式
+        # print("11111len(test_data):",len(test_data.iloc[0]))
+        test_data = self._transformer.transform(test_data)
+        # print("22222len(test_data):",len(test_data[0]))
+
+        # 从条件向量采样器中获取条件向量
+        condvec = self._data_sampler.sample_condvec(len(test_data))
+        if condvec is not None:
+            # 有条件向量，将条件向量转换为张量，并将其与随机噪声拼接
+            c, _, _, _ = condvec
+            c = torch.from_numpy(c).to(self._device)
+
+        # 将实际数据转换为张量
+        test_data = torch.from_numpy(test_data.astype('float32')).to(self._device)
+
+        # 根据条件向量是否存在，将测试样本与条件向量进行拼接
+        if c is not None:
+            print("test_data.size()", test_data.size())
+            print("c.size()", c.size())
+            test_data_cat = torch.cat([test_data, c], dim=1)
+        else:
+            test_data_cat = test_data
+
+        # 判别输入数据
+        print("test_data.size()",test_data_cat.size())
+        y_test_data = self._discriminator(test_data_cat)
+        result = y_test_data.cpu().detach().numpy()
+        print("result=",y_test_data.cpu().detach().numpy())
+        print("len:",len(result))
+        print("sum:",sum(result>0))
+        return pd.DataFrame(result)
 
     def set_device(self, device):
         """Set the `device` to be used ('GPU' or 'CPU)."""

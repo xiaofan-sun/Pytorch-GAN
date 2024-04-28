@@ -82,6 +82,8 @@ class DataSampler(object):
         r = np.expand_dims(np.random.rand(probs.shape[0]), axis=1)
         return (probs.cumsum(axis=1) > r).argmax(axis=1)
 
+    
+    # 条件向量是使用离散特征生成的，保持生成数据的整体分布与原始数据一致
     def sample_condvec(self, batch):
         """Generate the conditional vector for training.
 

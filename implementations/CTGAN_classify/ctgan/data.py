@@ -92,3 +92,9 @@ def write_tsv(data, meta, output_filename):
                     print(meta['column_info'][idx][int(col)], end=' ', file=f)
 
             print(file=f)
+
+def write_tsv_label(data, output_filename):
+    """Write labels to a tsv file."""
+    with open(output_filename, 'w') as f:
+        for row in data:
+            print(row, file=f)

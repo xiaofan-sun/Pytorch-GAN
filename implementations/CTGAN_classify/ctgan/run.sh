@@ -1,0 +1,2 @@
+nohup python -u __main__.py --data ../examples/csv/adult.csv --test_data ../examples/csv/adult.csv -m ../examples/csv/adult.json --load ../result/model.pth --save "../result/model.pth" -e 1 > ../result/output.log 2>&1 &
+python __main__.py --data ../examples/csv/adult.csv --test_data ../examples/csv/adult.csv -m ../examples/csv/adult.json --load ../result/model.pth --save "../result/model.pth" -e 1
