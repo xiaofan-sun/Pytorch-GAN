@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import optim
-from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional
+from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional, Sigmoid
 from tqdm import tqdm
 from base import BaseSynthesizer, random_state
 
@@ -17,7 +17,7 @@ from data_transformer import DataTransformer
 class Discriminator(Module):
     """Discriminator for the CTGAN."""
 
-    def __init__(self, input_dim, discriminator_dim, pac=10):
+    def __init__(self, input_dim, discriminator_dim, pac=1):
         super(Discriminator, self).__init__()
         dim = input_dim * pac
         self.pac = pac
@@ -30,7 +30,7 @@ class Discriminator(Module):
         seq += [Linear(dim, 1)]
         self.seq = Sequential(*seq)
 
-    def calc_gradient_penalty(self, real_data, fake_data, device='cpu', pac=10, lambda_=10):
+    def calc_gradient_penalty(self, real_data, fake_data, device='cpu', pac=1, lambda_=10):
         """Compute the gradient penalty."""
         alpha = torch.rand(real_data.size(0) // pac, 1, 1, device=device)
         alpha = alpha.repeat(1, pac, real_data.size(1))
@@ -55,9 +55,9 @@ class Discriminator(Module):
         """Apply the Discriminator to the `input_`."""
         assert input_.size()[0] % self.pac == 0
         # print("input",input_)
-        print("input_.size():",input_.size())
+        # print("input_.size():",input_.size())
         # print("input_.view(-1, self.pacdim)",input_.view(-1, self.pacdim))
-        print("input_.view(-1, self.pacdim).size():",input_.view(-1, self.pacdim).size())
+        # print("input_.view(-1, self.pacdim).size():",input_.view(-1, self.pacdim).size())
         return self.seq(input_.view(-1, self.pacdim))
     
 
@@ -147,7 +147,7 @@ class CTGAN(BaseSynthesizer):
     def __init__(self, embedding_dim=128, generator_dim=(256, 256), discriminator_dim=(256, 256),
                  generator_lr=2e-4, generator_decay=1e-6, discriminator_lr=2e-4,
                  discriminator_decay=1e-6, batch_size=500, discriminator_steps=1,
-                 log_frequency=True, verbose=False, epochs=300, pac=10, cuda=True):
+                 log_frequency=True, verbose=False, epochs=300, pac=1, cuda=True):
 
         assert batch_size % 2 == 0
 
@@ -336,8 +336,8 @@ class CTGAN(BaseSynthesizer):
         ).to(self._device)
 
         print("create Discriminator")
-        print("data_dim:",data_dim)
-        print("self._data_sampler.dim_cond_vec():",self._data_sampler.dim_cond_vec())
+        # print("data_dim:",data_dim)
+        # print("self._data_sampler.dim_cond_vec():",self._data_sampler.dim_cond_vec())
         self._discriminator = Discriminator(
             data_dim + self._data_sampler.dim_cond_vec(),
             self._discriminator_dim,
@@ -541,7 +541,7 @@ class CTGAN(BaseSynthesizer):
 
         return self._transformer.inverse_transform(data)
 
-    def predict(self, test_data, discrete_columns=()):
+    def predict(self, test_data, labels):
         """Predict test_data using the trained discriminator.
 
         Args:
@@ -558,6 +558,7 @@ class CTGAN(BaseSynthesizer):
             numpy.ndarray
         """
 
+        print("===========================")
         print("predicting")
         # 将原始测试数据转换为模型可用的格式
         # print("11111len(test_data):",len(test_data.iloc[0]))
@@ -585,10 +586,14 @@ class CTGAN(BaseSynthesizer):
         # 判别输入数据
         print("test_data.size()",test_data_cat.size())
         y_test_data = self._discriminator(test_data_cat)
-        result = y_test_data.cpu().detach().numpy()
-        print("result=",y_test_data.cpu().detach().numpy())
-        print("len:",len(result))
-        print("sum:",sum(result>0))
+        print("y_test_data.cpu().detach().numpy()",y_test_data.cpu().detach().numpy().reshape(-1))
+        result = y_test_data.cpu().detach().numpy().reshape(-1)
+        print("labels",labels.values)
+        print("result",result)
+        result[result>=0.5]=1
+        result[result<0.5]=0
+        ans = (result == labels).astype(int)
+        print("sum:",sum(ans))
         return pd.DataFrame(result)
 
     def set_device(self, device):

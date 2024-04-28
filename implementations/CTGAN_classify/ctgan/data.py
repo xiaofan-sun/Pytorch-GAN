@@ -17,7 +17,8 @@ def read_csv(csv_filename, meta_filename=None, header=True, discrete=None):
         discrete_columns = [
             column['name']
             for column in metadata['columns']
-            if column['type'] != 'continuous'
+            if column['type'] != 'continuous' and column['type'] != 'class'
+            # if column['type'] != 'continuous'
         ]
 
     elif discrete:

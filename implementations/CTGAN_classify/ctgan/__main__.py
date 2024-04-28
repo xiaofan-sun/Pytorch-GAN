@@ -69,15 +69,18 @@ def main():
     print(args)
     if args.tsv:
         data, discrete_columns = read_tsv(args.data, args.metadata)
-        test_data, test_discrete_columns = read_tsv(args.test_data, args.metadata)
+        test_data, _ = read_tsv(args.test_data, args.metadata)
         test_data = test_data[:-1]
     else:
         data, discrete_columns = read_csv(args.data, args.metadata, args.header, args.discrete)
-        # print("data",data)
+        data = data.iloc[:, :-1]
+        # print("discrete_columns:",discrete_columns)
         # print("type(data)",type(data)) #type(data) <class 'pandas.core.frame.DataFrame'>
         # print("len(data.iloc[0])",len(data.iloc[0]))
-        test_data, test_discrete_columns = read_csv(args.test_data, args.metadata, args.header, args.discrete)
-        test_data = test_data[:-1]
+        test_data, _ = read_csv(args.test_data, args.metadata, args.header, args.discrete)
+        labels = test_data.iloc[:, -1]
+        # print("type(labels):",type(labels))
+        test_dat = test_data.iloc[:, :-1]
         # print("len(test_data.iloc[0])",len(test_data.iloc[0]))
 
     if args.load:
@@ -118,7 +121,7 @@ def main():
         sampled.to_csv(args.output, index=False)
     
      # 使用判别器进行预测，并将结果存储在sampled变量中
-    pre_result = model.predict(test_data, test_discrete_columns)
+    pre_result = model.predict(test_data, labels)
     if args.tsv:
         write_tsv(pre_result, args.output_label)
     else:

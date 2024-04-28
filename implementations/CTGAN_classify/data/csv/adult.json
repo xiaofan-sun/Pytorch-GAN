@@ -58,7 +58,7 @@
         },
         {
             "name": "income",
-            "type": "categorical"
+            "type": "class"
         }
     ]
 }
