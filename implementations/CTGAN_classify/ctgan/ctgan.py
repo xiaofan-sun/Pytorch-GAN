@@ -565,15 +565,17 @@ class CTGAN(BaseSynthesizer):
         test_data = self._transformer.transform(test_data)
         # print("22222len(test_data):",len(test_data[0]))
 
+        # 将实际数据转换为张量
+        test_data = torch.from_numpy(test_data.astype('float32')).to(self._device)
+
         # 从条件向量采样器中获取条件向量
         condvec = self._data_sampler.sample_condvec(len(test_data))
         if condvec is not None:
             # 有条件向量，将条件向量转换为张量，并将其与随机噪声拼接
             c, _, _, _ = condvec
             c = torch.from_numpy(c).to(self._device)
-
-        # 将实际数据转换为张量
-        test_data = torch.from_numpy(test_data.astype('float32')).to(self._device)
+        else:
+            c = None
 
         # 根据条件向量是否存在，将测试样本与条件向量进行拼接
         if c is not None:
@@ -593,6 +595,7 @@ class CTGAN(BaseSynthesizer):
         result[result>=0.5]=1
         result[result<0.5]=0
         ans = (result == labels).astype(int)
+        print("len:",len(ans))
         print("sum:",sum(ans))
         return pd.DataFrame(result)
 
