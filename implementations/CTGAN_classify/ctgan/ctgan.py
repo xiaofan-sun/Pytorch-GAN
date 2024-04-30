@@ -73,8 +73,7 @@ class Residual(Module):
         out = self.bn(out)
         out = self.relu(out)
         return torch.cat([out, input_], dim=1)
-
-
+    
 class Generator(Module):
     """Generator for the CTGAN."""
 
