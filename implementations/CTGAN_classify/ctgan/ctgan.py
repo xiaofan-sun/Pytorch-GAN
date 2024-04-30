@@ -2,12 +2,11 @@
 
 import warnings
 
-import sys
 import numpy as np
 import pandas as pd
 import torch
 from torch import optim
-from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional, Sigmoid
+from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional, Softmax
 from tqdm import tqdm
 from base import BaseSynthesizer, random_state
 
@@ -27,8 +26,9 @@ class Discriminator(Module):
             seq += [Linear(dim, item), LeakyReLU(0.2), Dropout(0.5)]
             dim = item
 
-        seq += [Linear(dim, 1)]
+        seq += [Linear(dim, 2)]  # Modify the output layer to have 2 classes
         self.seq = Sequential(*seq)
+        self.softmax = Softmax(dim=1)  # Softmax activation for classification
 
     def calc_gradient_penalty(self, real_data, fake_data, device='cpu', pac=1, lambda_=10):
         """Compute the gradient penalty."""
@@ -54,13 +54,10 @@ class Discriminator(Module):
     def forward(self, input_):
         """Apply the Discriminator to the `input_`."""
         assert input_.size()[0] % self.pac == 0
-        # print("input",input_)
-        # print("input_.size():",input_.size())
-        # print("input_.view(-1, self.pacdim)",input_.view(-1, self.pacdim))
-        # print("input_.view(-1, self.pacdim).size():",input_.view(-1, self.pacdim).size())
-        return self.seq(input_.view(-1, self.pacdim))
+        output = self.seq(input_.view(-1, self.pacdim))
+        output = self.softmax(output)  # Apply softmax activation
+        return output
     
-
 class Residual(Module):
     """Residual layer for the CTGAN."""
 
@@ -412,8 +409,9 @@ class CTGAN(BaseSynthesizer):
                         fake_cat = fakeact
 
                     # 将拼接后的假样本和实际样本输入到判别器中，获取判别器对假样本和实际样本的输出。
-                    y_fake = self._discriminator(fake_cat)
-                    y_real = self._discriminator(real_cat)
+                    y_fake = np.argmax(self._discriminator(fake_cat), axis=1)
+                    # y_real = np.argmax(self._discriminator(real_cat), axis=1)
+                    y_real = np.argmax(self._discriminator(real_cat), axis=1)
 
                     # 计算梯度惩罚和判别器的损失
                     pen = self._discriminator.calc_gradient_penalty(
@@ -445,9 +443,9 @@ class CTGAN(BaseSynthesizer):
 
                 # 根据条件向量是否存在，将假样本和条件向量进行拼接，并将拼接后的样本输入到判别器中，获取判别器对假样本的输出
                 if c1 is not None:
-                    y_fake = self._discriminator(torch.cat([fakeact, c1], dim=1))
+                    y_fake = np.argmax(self._discriminator(torch.cat([fakeact, c1], dim=1)), axis=1)
                 else:
-                    y_fake = self._discriminator(fakeact)
+                    y_fake = np.argmax(self._discriminator(fakeact), axis=1)
 
                 # 计算条件损失和生成器的损失
                 if condvec is None:
@@ -587,7 +585,7 @@ class CTGAN(BaseSynthesizer):
 
         # 判别输入数据
         print("test_data.size()",test_data_cat.size())
-        y_test_data = self._discriminator(test_data_cat)
+        y_test_data = np.argmax(self._discriminator(test_data_cat), axis=1)
         print("y_test_data.cpu().detach().numpy()",y_test_data.cpu().detach().numpy().reshape(-1))
         result = y_test_data.cpu().detach().numpy().reshape(-1)
         print("labels",labels.values)
