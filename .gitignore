@@ -1,2 +1,7 @@
 images
 test.py
+data
+implementations/CTGAN_classify/data/csv/adult_test.csv
+implementations/CTGAN_classify/data/csv/adult_train.csv
+result/test_labels.csv
+result/sample_data.csv

@@ -1,231 +1,211 @@
-import argparse
+from torch.utils.data import DataLoader, Dataset
 import os
-import numpy as np
-import math
-
-import torchvision.transforms as transforms
-from torchvision.utils import save_image
-
-from torch.utils.data import DataLoader
-from torchvision import datasets
-from torch.autograd import Variable
-
-import torch.nn as nn
-import torch.nn.functional as F
 import torch
+import torch.nn as nn
+import pandas as pd
+import numpy as np
+import argparse
 
-os.makedirs("images", exist_ok=True)
+os.makedirs("result", exist_ok=True)
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
-parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
-parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
-parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
-parser.add_argument("--latent_dim", type=int, default=100, help="dimensionality of the latent space")
-parser.add_argument("--n_classes", type=int, default=10, help="number of classes for dataset")
-parser.add_argument("--img_size", type=int, default=32, help="size of each image dimension")
-parser.add_argument("--channels", type=int, default=1, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=400, help="interval between image sampling")
-opt = parser.parse_args()
-print(opt)
+parser.add_argument("--num_epochs", type=int, default=200, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=1024, help="size of the batches")
+parser.add_argument("--discriminator_steps", type=int, default=1, help="Number of discriminator updates to do for each generator update.")
+parser.add_argument("--n_classes", type=int, default=2, help="number of classes for dataset")
+parser.add_argument("--lr", type=float, default=0.002, help="adam: learning rate")
+parser.add_argument("--num_samples", type=int, default=10, help="The number of samples to generate")
 
-cuda = True if torch.cuda.is_available() else False
+parser.add_argument('--embedding_dim', type=int, default=128, help='Dimension of input z to the generator.')
+parser.add_argument('--generator_dim', type=str, default=256, help='Dimension of each generator layer. ')
+parser.add_argument('--discriminator_dim', type=str, default=256, help='Dimension of each discriminator layer. ')
 
+parser.add_argument('--train_data', default="../../data/train_data.csv", type=str, help='Path to train data')
+parser.add_argument('--output_data', default="../../result/sample_data.csv", type=str, help='Path of the output file')
+parser.add_argument('--test_data', default="../../data/test_data.csv", type=str, help='Path to testing data')
+parser.add_argument('--output_label', default="../../result/test_labels.csv", type=str, help='Path of the output file')
+parser.add_argument('--g_pth', default="../../data/generator.pth", type=str, help='Path to save generator')
+parser.add_argument('--d_pth', default="../../result/discriminator.pth", type=str, help='Path of save discriminator')
 
-def weights_init_normal(m):
-    classname = m.__class__.__name__
-    if classname.find("Conv") != -1:
-        torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find("BatchNorm2d") != -1:
-        torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
-        torch.nn.init.constant_(m.bias.data, 0.0)
+args = parser.parse_args()
+print(args)
+
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
+class MyDataset(Dataset):
+    def __init__(self, csv_file):
+        self.data = pd.read_csv(csv_file)
+
+    def __getitem__(self, idx):
+        row = self.data.iloc[idx]
+        attributes = row[:-1].values.astype(np.float32)
+        label = row['label']
+        return attributes, label
+
+    def __len__(self):
+        return len(self.data)
+
+# 定义生成器网络
 class Generator(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim, output_dim, num_classes, hidden_dim=128):
         super(Generator, self).__init__()
+        self.input_dim = input_dim
+        self.output_dim = input_dim
+        self.num_classes = num_classes
+        self.label_emb = nn.Embedding(num_classes, input_dim)
 
-        self.label_emb = nn.Embedding(opt.n_classes, opt.latent_dim)
-
-        self.init_size = opt.img_size // 4  # Initial size before upsampling
-        self.l1 = nn.Sequential(nn.Linear(opt.latent_dim, 128 * self.init_size ** 2))
-
-        self.conv_blocks = nn.Sequential(
-            nn.BatchNorm2d(128),
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 128, 3, stride=1, padding=1),
-            nn.BatchNorm2d(128, 0.8),
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(128, 64, 3, stride=1, padding=1),
-            nn.BatchNorm2d(64, 0.8),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, opt.channels, 3, stride=1, padding=1),
-            nn.Tanh(),
+            nn.Linear(hidden_dim, output_dim),
+            nn.Tanh()
         )
+    
+    def fit(self, batch_size, embedding_dim, device):
+        z = torch.randn(batch_size, embedding_dim).to(device)
+        fake_labels = torch.randint(0, 2, (batch_size,)).to(device)
+        fake_samples = self.forward(z, fake_labels)
+        return fake_samples, fake_labels
 
-    def forward(self, noise, labels):
-        gen_input = torch.mul(self.label_emb(labels), noise)
-        out = self.l1(gen_input)
-        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
-        img = self.conv_blocks(out)
-        return img
+    def forward(self, z, labels):
+        gen_input = torch.mul(self.label_emb(labels), z)
+        # print("gen_input",gen_input)
+        output = self.model(gen_input)
+        return output
 
-
+# 定义判别器网络
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim, num_classes, hidden_dim=128):
         super(Discriminator, self).__init__()
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        self.label_emb = nn.Embedding(num_classes, input_dim)
 
-        def discriminator_block(in_filters, out_filters, bn=True):
-            """Returns layers of each discriminator block"""
-            block = [nn.Conv2d(in_filters, out_filters, 3, 2, 1), nn.LeakyReLU(0.2, inplace=True), nn.Dropout2d(0.25)]
-            if bn:
-                block.append(nn.BatchNorm2d(out_filters, 0.8))
-            return block
-
-        self.conv_blocks = nn.Sequential(
-            *discriminator_block(opt.channels, 16, bn=False),
-            *discriminator_block(16, 32),
-            *discriminator_block(32, 64),
-            *discriminator_block(64, 128),
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(0.2, inplace=True),
         )
 
-        # The height and width of downsampled image
-        ds_size = opt.img_size // 2 ** 4
-
-        # Output layers
-        self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
-        self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.n_classes), nn.Softmax())
-
-    def forward(self, img):
-        out = self.conv_blocks(img)
-        out = out.view(out.shape[0], -1)
-        validity = self.adv_layer(out)
-        label = self.aux_layer(out)
-
-        return validity, label
-
-
-# Loss functions
-adversarial_loss = torch.nn.BCELoss()
-auxiliary_loss = torch.nn.CrossEntropyLoss()
-
-# Initialize generator and discriminator
-generator = Generator()
-discriminator = Discriminator()
-
-if cuda:
-    generator.cuda()
-    discriminator.cuda()
-    adversarial_loss.cuda()
-    auxiliary_loss.cuda()
-
-# Initialize weights
-generator.apply(weights_init_normal)
-discriminator.apply(weights_init_normal)
-
-# Configure data loader
-os.makedirs("../../data/mnist", exist_ok=True)
-dataloader = torch.utils.data.DataLoader(
-    datasets.MNIST(
-        "../../data/mnist",
-        train=True,
-        download=True,
-        transform=transforms.Compose(
-            [transforms.Resize(opt.img_size), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
-        ),
-    ),
-    batch_size=opt.batch_size,
-    shuffle=True,
-)
-
-# Optimizers
-optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-
-FloatTensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
-LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
-
-
-def sample_image(n_row, batches_done):
-    """Saves a grid of generated digits ranging from 0 to n_classes"""
-    # Sample noise
-    z = Variable(FloatTensor(np.random.normal(0, 1, (n_row ** 2, opt.latent_dim))))
-    # Get labels ranging from 0 to n_classes for n rows
-    labels = np.array([num for _ in range(n_row) for num in range(n_row)])
-    labels = Variable(LongTensor(labels))
-    gen_imgs = generator(z, labels)
-    save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
-
-
-# ----------
-#  Training
-# ----------
-
-for epoch in range(opt.n_epochs):
-    for i, (imgs, labels) in enumerate(dataloader):
-
-        batch_size = imgs.shape[0]
-
-        # Adversarial ground truths
-        valid = Variable(FloatTensor(batch_size, 1).fill_(1.0), requires_grad=False)
-        fake = Variable(FloatTensor(batch_size, 1).fill_(0.0), requires_grad=False)
-
-        # Configure input
-        real_imgs = Variable(imgs.type(FloatTensor))
-        labels = Variable(labels.type(LongTensor))
-
-        # -----------------
-        #  Train Generator
-        # -----------------
-
-        optimizer_G.zero_grad()
-
-        # Sample noise and labels as generator input
-        z = Variable(FloatTensor(np.random.normal(0, 1, (batch_size, opt.latent_dim))))
-        gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, batch_size)))
-
-        # Generate a batch of images
-        gen_imgs = generator(z, gen_labels)
-
-        # Loss measures generator's ability to fool the discriminator
-        validity, pred_label = discriminator(gen_imgs)
-        g_loss = 0.5 * (adversarial_loss(validity, valid) + auxiliary_loss(pred_label, gen_labels))
-
-        g_loss.backward()
-        optimizer_G.step()
-
-        # ---------------------
-        #  Train Discriminator
-        # ---------------------
-
-        optimizer_D.zero_grad()
-
-        # Loss for real images
-        real_pred, real_aux = discriminator(real_imgs)
-        d_real_loss = (adversarial_loss(real_pred, valid) + auxiliary_loss(real_aux, labels)) / 2
-
-        # Loss for fake images
-        fake_pred, fake_aux = discriminator(gen_imgs.detach())
-        d_fake_loss = (adversarial_loss(fake_pred, fake) + auxiliary_loss(fake_aux, gen_labels)) / 2
-
-        # Total discriminator loss
-        d_loss = (d_real_loss + d_fake_loss) / 2
-
-        # Calculate discriminator accuracy
-        pred = np.concatenate([real_aux.data.cpu().numpy(), fake_aux.data.cpu().numpy()], axis=0)
-        gt = np.concatenate([labels.data.cpu().numpy(), gen_labels.data.cpu().numpy()], axis=0)
-        d_acc = np.mean(np.argmax(pred, axis=1) == gt)
-
-        d_loss.backward()
-        optimizer_D.step()
-
-        print(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %d%%] [G loss: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), 100 * d_acc, g_loss.item())
+        self.adv_layer = nn.Sequential(
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()
         )
-        batches_done = epoch * len(dataloader) + i
-        if batches_done % opt.sample_interval == 0:
-            sample_image(n_row=10, batches_done=batches_done)
+
+        self.aux_layer = nn.Sequential(
+            nn.Linear(hidden_dim, num_classes),
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, x):
+        # print("real_samples",x.size())
+        # print("real_labels",labels.size())
+        validity = self.model(x)
+        adv_output = self.adv_layer(validity)
+        aux_output = self.aux_layer(validity)
+        return adv_output, aux_output
+
+# def generate_samples(generator, num_samples, hidden_size, device):
+#     generator.eval()
+#     with torch.no_grad():
+#         z = torch.randn(num_samples, hidden_size).to(device)
+#         samples = generator(z)
+#     generator.train()
+#     return samples.cpu().numpy()
+
+def train_acgan(generator, discriminator, dataloader, device, embedding_dim, steps, num_epochs=200, batch_size=64, lr=0.002):
+    print("train_acgan")
+    generator = generator.to(device)
+    discriminator = discriminator.to(device)
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr)
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr)
+    
+    adv_loss = nn.BCELoss().to(device)
+    aux_loss = nn.CrossEntropyLoss().to(device)
+
+    print("start training")
+    for epoch in range(num_epochs):
+        for i, (attributes, labels) in enumerate(dataloader):
+            d_loss = None
+            g_loss = None
+            for k in range(steps):
+                real_samples = attributes.to(device)
+                real_labels = labels.to(int).to(device)
+                print("real_samples",real_samples)
+                # print("real_samples",real_samples.size())
+                # print("real_labels",real_labels.size())
+                # print("real_labels",real_labels)
+                # batch_size = real_samples.size(0)
+
+                # Train discriminator
+                optimizer_D.zero_grad()
+
+                fake_samples, fake_labels = generator.fit(batch_size, embedding_dim, device)
+
+                # 判别输出值， 判别标签
+                real_adv, real_aux = discriminator(real_samples)
+                fake_adv, fake_aux = discriminator(fake_samples)
+
+                # 判别损失
+                real_adv_loss = adv_loss(real_adv, torch.ones_like(real_adv))
+                fake_adv_loss = adv_loss(fake_adv, torch.zeros_like(fake_adv))
+                d_adv_loss = 0.5 * (real_adv_loss + fake_adv_loss)
+
+                # 分类损失
+                real_aux_loss = aux_loss(real_aux, real_labels)
+                fake_aux_loss = aux_loss(fake_aux, fake_labels)
+                d_aux_loss = 0.5 * (real_aux_loss + fake_aux_loss)
+
+                d_loss = d_adv_loss + d_aux_loss
+                d_loss.backward()
+                optimizer_D.step()
+
+            # Train generator
+            optimizer_G.zero_grad()
+            fake_samples, fake_labels = generator.fit(batch_size, embedding_dim, device)
+            fake_adv, fake_aux = discriminator(fake_samples)
+            # 判别损失：
+            fake_adv_loss = adv_loss(fake_adv, torch.ones_like(fake_adv))
+            # 分类损失
+            fake_aux_loss = aux_loss(fake_aux, fake_labels)
+            g_loss = fake_adv_loss + fake_aux_loss
+            g_loss.backward()
+            optimizer_G.step()
+
+        print(f"Epoch [{epoch+1}/{num_epochs}], Generator Loss: {g_loss.item():.4f}, Discriminator Loss: {d_loss.item():.4f}")
+    print("Training completed!")
+    return generator, discriminator
+
+# 加载数据
+dataset = MyDataset(args.train_data)
+dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+# 创建模型
+generator = Generator(args.embedding_dim, len(dataset[0][0]), args.n_classes, args.generator_dim).to(device)
+discriminator = Discriminator(len(dataset[0][0]), args.n_classes, args.discriminator_dim).to(device)
+generator, discriminator = train_acgan(generator, discriminator, dataloader, device, args.embedding_dim, args.discriminator_steps, args.num_epochs, args.batch_size, args.lr)
+torch.save(generator.state_dict(), args.g_pth)
+torch.save(discriminator.state_dict(), args.d_pth)
+
+# 生成样本数据
+generated_samples, generated_labels = generator.fit(args.num_samples, args.embedding_dim, device)
+generated_data = torch.cat((generated_samples, generated_labels.unsqueeze(1)), dim=1)
+df = pd.DataFrame(generated_data.detach().numpy())
+df.to_csv(args.output_data, index=False)
+
+# 将测试数据输入到判别器
+
+test_data = pd.read_csv(args.test_data)
+test_samples = torch.tensor(test_data.iloc[:, :-1].values.astype(np.float32))
+test_labels = torch.tensor(test_data.iloc[:, -1].values)
+_, pred_labels = discriminator(test_samples)
+pred_labels = torch.argmax(pred_labels.detach(), dim=1)
+
+df = pd.DataFrame(pred_labels)
+df.to_csv(args.output_label, index=False)
+result = torch.zeros_like(test_labels)
+result[pred_labels == test_labels] = 1
+print(result)
