@@ -103,19 +103,10 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         # print("real_samples",x.size())
-        # print("real_labels",labels.size())
         validity = self.model(x)
         adv_output = self.adv_layer(validity)
         aux_output = self.aux_layer(validity)
         return adv_output, aux_output
-
-# def generate_samples(generator, num_samples, hidden_size, device):
-#     generator.eval()
-#     with torch.no_grad():
-#         z = torch.randn(num_samples, hidden_size).to(device)
-#         samples = generator(z)
-#     generator.train()
-#     return samples.cpu().numpy()
 
 def train_acgan(generator, discriminator, dataloader, device, embedding_dim, steps, num_epochs=200, batch_size=64, lr=0.002):
     print("train_acgan")
@@ -135,11 +126,10 @@ def train_acgan(generator, discriminator, dataloader, device, embedding_dim, ste
             for k in range(steps):
                 real_samples = attributes.to(device)
                 real_labels = labels.to(int).to(device)
-                print("real_samples",real_samples)
+                # print("real_samples",real_samples)
                 # print("real_samples",real_samples.size())
                 # print("real_labels",real_labels.size())
                 # print("real_labels",real_labels)
-                # batch_size = real_samples.size(0)
 
                 # Train discriminator
                 optimizer_D.zero_grad()
@@ -193,11 +183,11 @@ torch.save(discriminator.state_dict(), args.d_pth)
 # 生成样本数据
 generated_samples, generated_labels = generator.fit(args.num_samples, args.embedding_dim, device)
 generated_data = torch.cat((generated_samples, generated_labels.unsqueeze(1)), dim=1)
+print("generated_data",generated_data)
 df = pd.DataFrame(generated_data.detach().numpy())
 df.to_csv(args.output_data, index=False)
 
 # 将测试数据输入到判别器
-
 test_data = pd.read_csv(args.test_data)
 test_samples = torch.tensor(test_data.iloc[:, :-1].values.astype(np.float32))
 test_labels = torch.tensor(test_data.iloc[:, -1].values)
@@ -208,4 +198,4 @@ df = pd.DataFrame(pred_labels)
 df.to_csv(args.output_label, index=False)
 result = torch.zeros_like(test_labels)
 result[pred_labels == test_labels] = 1
-print(result)
+print("result",result)
