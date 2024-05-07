@@ -6,16 +6,17 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import optim
-from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional, Softmax
+from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional, Softmax, Sigmoid
 from tqdm import tqdm
 from base import BaseSynthesizer, random_state
-
+from sklearn.metrics import precision_score, accuracy_score
 from data_sampler import DataSampler
 from data_transformer import DataTransformer
 
 class Discriminator(Module):
     """Discriminator for the CTGAN."""
 
+    # def __init__(self, input_dim, discriminator_dim, pac=1,num_class=2):
     def __init__(self, input_dim, discriminator_dim, pac=1):
         super(Discriminator, self).__init__()
         dim = input_dim * pac
@@ -26,9 +27,11 @@ class Discriminator(Module):
             seq += [Linear(dim, item), LeakyReLU(0.2), Dropout(0.5)]
             dim = item
 
-        seq += [Linear(dim, 2)]  # Modify the output layer to have 2 classes
+        # seq += [Linear(dim, 2), Softmax(dim=1)]  # Modify the output layer to have 2 classes
+        # seq += [Linear(dim, 1)]  # Modify the output layer to have 2 classes
+        seq += [Linear(dim, 1), Sigmoid()]  # Modify the output layer to have 2 classes
         self.seq = Sequential(*seq)
-        self.softmax = Softmax(dim=1)  # Softmax activation for classification
+        print("self.seq",self.seq)
 
     def calc_gradient_penalty(self, real_data, fake_data, device='cpu', pac=1, lambda_=10):
         """Compute the gradient penalty."""
@@ -40,6 +43,8 @@ class Discriminator(Module):
 
         disc_interpolates = self(interpolates)
 
+        # print("disc_interpolates.size()",disc_interpolates.size())
+        # print("disc_interpolates.size()",disc_interpolates.size())
         gradients = torch.autograd.grad(
             outputs=disc_interpolates, inputs=interpolates,
             grad_outputs=torch.ones(disc_interpolates.size(), device=device),
@@ -55,8 +60,14 @@ class Discriminator(Module):
         """Apply the Discriminator to the `input_`."""
         assert input_.size()[0] % self.pac == 0
         output = self.seq(input_.view(-1, self.pacdim))
-        output = self.softmax(output)  # Apply softmax activation
+        # print("dis_loss:",output)
         return output
+        
+        # output = self.seq_adv(input_.view(-1, self.pacdim))
+        # output = self.adv_softmax(output)  # Apply softmax activation
+        # labels = self.seq_aux(input_.view(-1, self.pacdim))
+        # labels = self.aux_softmax(labels)  # Apply softmax activation
+        # return output, labels
     
 class Residual(Module):
     """Residual layer for the CTGAN."""
@@ -163,12 +174,6 @@ class CTGAN(BaseSynthesizer):
         self._epochs = epochs
         self.pac = pac
 
-        # if not cuda or not torch.cuda.is_available():
-        #     device = 'cpu'
-        # elif isinstance(cuda, str):
-        #     device = cuda
-        # else:
-        #     device = 'cuda'
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         print("device:",device)
 
@@ -408,10 +413,11 @@ class CTGAN(BaseSynthesizer):
                         fake_cat = fakeact
 
                     # 将拼接后的假样本和实际样本输入到判别器中，获取判别器对假样本和实际样本的输出。
-                    y_fake = np.argmax(self._discriminator(fake_cat), axis=1)
-                    # y_real = np.argmax(self._discriminator(real_cat), axis=1)
-                    y_real = np.argmax(self._discriminator(real_cat), axis=1)
-
+                    y_fake = self._discriminator(fake_cat)
+                    y_real = self._discriminator(real_cat)
+                    # print("y_fake",y_fake)
+                    # print("y_real",y_real)
+                    
                     # 计算梯度惩罚和判别器的损失
                     pen = self._discriminator.calc_gradient_penalty(
                         real_cat, fake_cat, self._device, self.pac)
@@ -442,9 +448,11 @@ class CTGAN(BaseSynthesizer):
 
                 # 根据条件向量是否存在，将假样本和条件向量进行拼接，并将拼接后的样本输入到判别器中，获取判别器对假样本的输出
                 if c1 is not None:
-                    y_fake = np.argmax(self._discriminator(torch.cat([fakeact, c1], dim=1)), axis=1)
+                    # y_fake = np.argmax(self._discriminator(torch.cat([fakeact, c1], dim=1)), axis=1)
+                    y_fake = self._discriminator(torch.cat([fakeact, c1], dim=1))
                 else:
-                    y_fake = np.argmax(self._discriminator(fakeact), axis=1)
+                    # y_fake = np.argmax(self._discriminator(fakeact), axis=1)
+                    y_fake = self._discriminator(fakeact)
 
                 # 计算条件损失和生成器的损失
                 if condvec is None:
@@ -538,7 +546,7 @@ class CTGAN(BaseSynthesizer):
 
         return self._transformer.inverse_transform(data)
 
-    def predict(self, test_data, labels):
+    def predict(self, test_data, true_labels):
         """Predict test_data using the trained discriminator.
 
         Args:
@@ -583,18 +591,20 @@ class CTGAN(BaseSynthesizer):
             test_data_cat = test_data
 
         # 判别输入数据
+        print("test_data",test_data_cat)
         print("test_data.size()",test_data_cat.size())
-        y_test_data = np.argmax(self._discriminator(test_data_cat), axis=1)
-        print("y_test_data.cpu().detach().numpy()",y_test_data.cpu().detach().numpy().reshape(-1))
-        result = y_test_data.cpu().detach().numpy().reshape(-1)
-        print("labels",labels.values)
-        print("result",result)
-        result[result>=0.5]=1
-        result[result<0.5]=0
-        ans = (result == labels).astype(int)
-        print("len:",len(ans))
-        print("sum:",sum(ans))
-        return pd.DataFrame(result)
+        # y_test_data = np.argmax(self._discriminator(test_data_cat), axis=1)
+        pred_labels = self._discriminator(test_data_cat).cpu().detach().numpy().reshape(-1)
+        print("true_labels",true_labels.values[:20])
+        pred_labels[pred_labels>=0.5]=1
+        pred_labels[pred_labels<0.5]=0
+        print("pred_labels",pred_labels[:20])
+        ans = (pred_labels == true_labels).astype(int)
+        acc = accuracy_score(true_labels, pred_labels)
+        precision = precision_score(true_labels, pred_labels)
+        print("acc", acc)
+        print("precision", precision)
+        return pd.DataFrame(pred_labels)
 
     def set_device(self, device):
         """Set the `device` to be used ('GPU' or 'CPU)."""

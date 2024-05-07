@@ -5,7 +5,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import argparse
-
+from sklearn.metrics import precision_score
 os.makedirs("result", exist_ok=True)
 
 parser = argparse.ArgumentParser()
@@ -24,7 +24,7 @@ parser.add_argument('--train_data', default="../../data/train_data.csv", type=st
 parser.add_argument('--output_data', default="../../result/sample_data.csv", type=str, help='Path of the output file')
 parser.add_argument('--test_data', default="../../data/test_data.csv", type=str, help='Path to testing data')
 parser.add_argument('--output_label', default="../../result/test_labels.csv", type=str, help='Path of the output file')
-parser.add_argument('--g_pth', default="../../data/generator.pth", type=str, help='Path to save generator')
+parser.add_argument('--g_pth', default="../../result/generator.pth", type=str, help='Path to save generator')
 parser.add_argument('--d_pth', default="../../result/discriminator.pth", type=str, help='Path of save discriminator')
 
 args = parser.parse_args()
@@ -32,6 +32,21 @@ print(args)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+class Residual(nn.Module):
+    """Residual layer for the CTGAN."""
+
+    def __init__(self, i, o):
+        super(Residual, self).__init__()
+        self.fc = nn.Linear(i, o)
+        self.bn = nn.BatchNorm1d(o)
+        self.relu = nn.ReLU()
+
+    def forward(self, input_):
+        """Apply the Residual layer to the `input_`."""
+        out = self.fc(input_)
+        out = self.bn(out)
+        out = self.relu(out)
+        return torch.cat([out, input_], dim=1)
 
 class MyDataset(Dataset):
     def __init__(self, csv_file):
@@ -87,8 +102,10 @@ class Discriminator(nn.Module):
         self.model = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.5),
             nn.Linear(hidden_dim, hidden_dim),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.5),
         )
 
         self.adv_layer = nn.Sequential(
@@ -139,16 +156,23 @@ def train_acgan(generator, discriminator, dataloader, device, embedding_dim, ste
                 # 判别输出值， 判别标签
                 real_adv, real_aux = discriminator(real_samples)
                 fake_adv, fake_aux = discriminator(fake_samples)
+                
 
                 # 判别损失
                 real_adv_loss = adv_loss(real_adv, torch.ones_like(real_adv))
                 fake_adv_loss = adv_loss(fake_adv, torch.zeros_like(fake_adv))
                 d_adv_loss = 0.5 * (real_adv_loss + fake_adv_loss)
+                print("real_adv", real_adv[:10])
+                print("fake_adv",fake_adv[:10])
 
                 # 分类损失
                 real_aux_loss = aux_loss(real_aux, real_labels)
                 fake_aux_loss = aux_loss(fake_aux, fake_labels)
                 d_aux_loss = 0.5 * (real_aux_loss + fake_aux_loss)
+                print("real_aux",real_aux[:10])
+                print("real_labels,",real_labels[:10])
+                print("fake_aux",fake_aux[:10])
+                print("fake_labels",fake_labels[:10])
 
                 d_loss = d_adv_loss + d_aux_loss
                 d_loss.backward()
@@ -162,6 +186,7 @@ def train_acgan(generator, discriminator, dataloader, device, embedding_dim, ste
             fake_adv_loss = adv_loss(fake_adv, torch.ones_like(fake_adv))
             # 分类损失
             fake_aux_loss = aux_loss(fake_aux, fake_labels)
+            # g_loss = fake_adv_loss + fake_aux_loss
             g_loss = fake_adv_loss + fake_aux_loss
             g_loss.backward()
             optimizer_G.step()
@@ -198,4 +223,11 @@ df = pd.DataFrame(pred_labels)
 df.to_csv(args.output_label, index=False)
 result = torch.zeros_like(test_labels)
 result[pred_labels == test_labels] = 1
-print("result",result)
+precision = precision_score(pred_labels,test_labels)
+print("result:",result)
+print("precision:",precision)
+print("pred_labels:",pred_labels[:30])
+print("test_labels:",test_labels[:30])
+print("test_labels_1:",sum(test_labels))
+print("result:",sum(result))
+print("accuracy:",sum(result)/len(test_labels))

@@ -60,6 +60,7 @@ def _parse_args():
                         help='Path of the output file')
 
     parser.add_argument('--predict', default=True, type=bool, help='Whether to make a prediction')
+    parser.add_argument('--class_num', default=True, type=bool, help='Number of classes')
 
     return parser.parse_args()
 
@@ -80,7 +81,7 @@ def main():
         test_data, _ = read_csv(args.test_data, args.metadata, args.header, args.discrete)
         labels = test_data.iloc[:, -1]
         # print("type(labels):",type(labels))
-        test_dat = test_data.iloc[:, :-1]
+        test_data = test_data.iloc[:, :-1]
         # print("len(test_data.iloc[0])",len(test_data.iloc[0]))
 
     if args.load:
@@ -99,6 +100,8 @@ def main():
             epochs=args.epochs)
 
         # 将数据和离散列作为参数，对CTGAN模型进行训练
+        print("data:",data)
+        print("discrete_columns:",discrete_columns)
         model.fit(data, discrete_columns)
         # 保存模型
         if args.save is not None:
