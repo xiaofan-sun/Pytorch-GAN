@@ -9,7 +9,7 @@ from torch import optim
 from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional, Softmax, Sigmoid
 from tqdm import tqdm
 from base import BaseSynthesizer, random_state
-from sklearn.metrics import precision_score, accuracy_score
+from sklearn.metrics import precision_score, accuracy_score, recall_score
 from data_sampler import DataSampler
 from data_transformer import DataTransformer
 
@@ -62,13 +62,7 @@ class Discriminator(Module):
         output = self.seq(input_.view(-1, self.pacdim))
         # print("dis_loss:",output)
         return output
-        
-        # output = self.seq_adv(input_.view(-1, self.pacdim))
-        # output = self.adv_softmax(output)  # Apply softmax activation
-        # labels = self.seq_aux(input_.view(-1, self.pacdim))
-        # labels = self.aux_softmax(labels)  # Apply softmax activation
-        # return output, labels
-    
+
 class Residual(Module):
     """Residual layer for the CTGAN."""
 
@@ -217,6 +211,8 @@ class CTGAN(BaseSynthesizer):
         """Apply proper activation function to the output of the generator."""
         data_t = []
         st = 0
+        # print("data",data)
+        # print("self._transformer.output_info_list",self._transformer.output_info_list)
         for column_info in self._transformer.output_info_list:
             for span_info in column_info:
                 if span_info.activation_fn == 'tanh':
@@ -591,19 +587,21 @@ class CTGAN(BaseSynthesizer):
             test_data_cat = test_data
 
         # 判别输入数据
-        print("test_data",test_data_cat)
-        print("test_data.size()",test_data_cat.size())
-        # y_test_data = np.argmax(self._discriminator(test_data_cat), axis=1)
-        pred_labels = self._discriminator(test_data_cat).cpu().detach().numpy().reshape(-1)
-        print("true_labels",true_labels.values[:20])
-        pred_labels[pred_labels>=0.5]=1
-        pred_labels[pred_labels<0.5]=0
+        pred_labels = torch.flatten(self._discriminator(test_data_cat).cpu().detach())
+        print("tem_ans", pred_labels)
+        pred_labels = torch.where(pred_labels>=0.4, torch.tensor(1), torch.tensor(0))
+        print("true_labels",true_labels[:20])
         print("pred_labels",pred_labels[:20])
-        ans = (pred_labels == true_labels).astype(int)
+        print("true_labels_1",sum(true_labels))
+        print("pred_labels_1",sum(pred_labels))
+        
         acc = accuracy_score(true_labels, pred_labels)
         precision = precision_score(true_labels, pred_labels)
-        print("acc", acc)
-        print("precision", precision)
+        recall = recall_score(true_labels, pred_labels)
+        print("acc:", acc)
+        print("recall:", recall)
+        print("precision:", precision)
+
         return pd.DataFrame(pred_labels)
 
     def set_device(self, device):

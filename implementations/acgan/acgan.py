@@ -5,7 +5,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import argparse
-from sklearn.metrics import precision_score
+from sklearn.metrics import precision_score,recall_score,accuracy_score
 os.makedirs("result", exist_ok=True)
 
 parser = argparse.ArgumentParser()
@@ -78,12 +78,6 @@ class Generator(nn.Module):
             nn.Linear(hidden_dim, output_dim),
             nn.Tanh()
         )
-    
-    def fit(self, batch_size, embedding_dim, device):
-        z = torch.randn(batch_size, embedding_dim).to(device)
-        fake_labels = torch.randint(0, 2, (batch_size,)).to(device)
-        fake_samples = self.forward(z, fake_labels)
-        return fake_samples, fake_labels
 
     def forward(self, z, labels):
         gen_input = torch.mul(self.label_emb(labels), z)
@@ -125,7 +119,7 @@ class Discriminator(nn.Module):
         aux_output = self.aux_layer(validity)
         return adv_output, aux_output
 
-def train_acgan(generator, discriminator, dataloader, device, embedding_dim, steps, num_epochs=200, batch_size=64, lr=0.002):
+def train_acgan(generator, discriminator, dataloader, device, embedding_dim, steps, num_epochs=200, batch_size=64, lr=0.0002):
     print("train_acgan")
     generator = generator.to(device)
     discriminator = discriminator.to(device)
@@ -144,35 +138,37 @@ def train_acgan(generator, discriminator, dataloader, device, embedding_dim, ste
                 real_samples = attributes.to(device)
                 real_labels = labels.to(int).to(device)
                 # print("real_samples",real_samples)
-                # print("real_samples",real_samples.size())
-                # print("real_labels",real_labels.size())
                 # print("real_labels",real_labels)
 
                 # Train discriminator
                 optimizer_D.zero_grad()
 
-                fake_samples, fake_labels = generator.fit(batch_size, embedding_dim, device)
+                z = torch.randn(batch_size, embedding_dim).to(device)
+                fake_labels = torch.randint(0, 2, (batch_size,)).to(device)
+                fake_samples = generator(z, fake_labels)
+                # print("fake_samples",fake_samples.size())
 
                 # 判别输出值， 判别标签
                 real_adv, real_aux = discriminator(real_samples)
                 fake_adv, fake_aux = discriminator(fake_samples)
-                
 
                 # 判别损失
                 real_adv_loss = adv_loss(real_adv, torch.ones_like(real_adv))
                 fake_adv_loss = adv_loss(fake_adv, torch.zeros_like(fake_adv))
                 d_adv_loss = 0.5 * (real_adv_loss + fake_adv_loss)
-                print("real_adv", real_adv[:10])
-                print("fake_adv",fake_adv[:10])
+                # print("real_adv", real_adv[:10])
+                # print("fake_adv",fake_adv[:10])
 
                 # 分类损失
                 real_aux_loss = aux_loss(real_aux, real_labels)
                 fake_aux_loss = aux_loss(fake_aux, fake_labels)
                 d_aux_loss = 0.5 * (real_aux_loss + fake_aux_loss)
-                print("real_aux",real_aux[:10])
-                print("real_labels,",real_labels[:10])
-                print("fake_aux",fake_aux[:10])
-                print("fake_labels",fake_labels[:10])
+                # print("d_adv_loss",d_adv_loss)
+                # print("d_aux_loss",d_aux_loss)
+                # print("real_aux",real_aux[:10])
+                # print("real_labels,",real_labels[:10])
+                # print("fake_aux",fake_aux[:10])
+                # print("fake_labels",fake_labels[:10])
 
                 d_loss = d_adv_loss + d_aux_loss
                 d_loss.backward()
@@ -180,13 +176,14 @@ def train_acgan(generator, discriminator, dataloader, device, embedding_dim, ste
 
             # Train generator
             optimizer_G.zero_grad()
-            fake_samples, fake_labels = generator.fit(batch_size, embedding_dim, device)
+            z = torch.randn(batch_size, embedding_dim).to(device)
+            fake_labels = torch.randint(0, 2, (batch_size,)).to(device)
+            fake_samples = generator(z, fake_labels)
             fake_adv, fake_aux = discriminator(fake_samples)
             # 判别损失：
             fake_adv_loss = adv_loss(fake_adv, torch.ones_like(fake_adv))
             # 分类损失
             fake_aux_loss = aux_loss(fake_aux, fake_labels)
-            # g_loss = fake_adv_loss + fake_aux_loss
             g_loss = fake_adv_loss + fake_aux_loss
             g_loss.backward()
             optimizer_G.step()
@@ -201,33 +198,40 @@ dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 # 创建模型
 generator = Generator(args.embedding_dim, len(dataset[0][0]), args.n_classes, args.generator_dim).to(device)
 discriminator = Discriminator(len(dataset[0][0]), args.n_classes, args.discriminator_dim).to(device)
-generator, discriminator = train_acgan(generator, discriminator, dataloader, device, args.embedding_dim, args.discriminator_steps, args.num_epochs, args.batch_size, args.lr)
+
+generator, discriminator = train_acgan(generator, discriminator, dataloader, device, args.embedding_dim, args.discriminator_steps, args.num_epochs, len(dataset), args.lr)
 torch.save(generator.state_dict(), args.g_pth)
 torch.save(discriminator.state_dict(), args.d_pth)
 
 # 生成样本数据
-generated_samples, generated_labels = generator.fit(args.num_samples, args.embedding_dim, device)
+z = torch.randn(args.num_samples, args.embedding_dim).to(device)
+generated_labels = torch.randint(1, 2, (args.num_samples,)).to(device)
+generated_samples = generator(z, generated_labels)
 generated_data = torch.cat((generated_samples, generated_labels.unsqueeze(1)), dim=1)
-print("generated_data",generated_data)
+# print("generated_data",generated_data)
 df = pd.DataFrame(generated_data.detach().numpy())
 df.to_csv(args.output_data, index=False)
 
 # 将测试数据输入到判别器
 test_data = pd.read_csv(args.test_data)
 test_samples = torch.tensor(test_data.iloc[:, :-1].values.astype(np.float32))
-test_labels = torch.tensor(test_data.iloc[:, -1].values)
+true_labels = torch.tensor(test_data.iloc[:, -1].values)
 _, pred_labels = discriminator(test_samples)
+# print("pred_labels",pred_labels)
 pred_labels = torch.argmax(pred_labels.detach(), dim=1)
 
 df = pd.DataFrame(pred_labels)
 df.to_csv(args.output_label, index=False)
-result = torch.zeros_like(test_labels)
-result[pred_labels == test_labels] = 1
-precision = precision_score(pred_labels,test_labels)
-print("result:",result)
+result = torch.zeros_like(true_labels)
+result[pred_labels == true_labels] = 1
+precision = precision_score(true_labels,pred_labels)
+acc = accuracy_score(true_labels,pred_labels)
+recall = recall_score(true_labels,pred_labels)
+print("pred_labels:",pred_labels[:20])
+print("true_labels:",true_labels[:20])
+print("total:",len(true_labels))
+print("true_labels_1:",sum(true_labels))
+print("pred_labels_1:",sum(pred_labels))
+print("acc:",acc)
+print("recall:",recall)
 print("precision:",precision)
-print("pred_labels:",pred_labels[:30])
-print("test_labels:",test_labels[:30])
-print("test_labels_1:",sum(test_labels))
-print("result:",sum(result))
-print("accuracy:",sum(result)/len(test_labels))

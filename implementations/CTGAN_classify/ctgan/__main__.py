@@ -4,6 +4,7 @@ import argparse
 
 from data import read_csv, read_tsv, write_tsv, write_tsv_label
 from ctgan import CTGAN
+import torch
 
 def _parse_args():
     parser = argparse.ArgumentParser(description='CTGAN Command Line Interface')
@@ -75,14 +76,9 @@ def main():
     else:
         data, discrete_columns = read_csv(args.data, args.metadata, args.header, args.discrete)
         data = data.iloc[:, :-1]
-        # print("discrete_columns:",discrete_columns)
-        # print("type(data)",type(data)) #type(data) <class 'pandas.core.frame.DataFrame'>
-        # print("len(data.iloc[0])",len(data.iloc[0]))
         test_data, _ = read_csv(args.test_data, args.metadata, args.header, args.discrete)
-        labels = test_data.iloc[:, -1]
-        # print("type(labels):",type(labels))
+        labels = torch.tensor(test_data.iloc[:, -1])
         test_data = test_data.iloc[:, :-1]
-        # print("len(test_data.iloc[0])",len(test_data.iloc[0]))
 
     if args.load:
         print("load CTGAN")
@@ -100,8 +96,8 @@ def main():
             epochs=args.epochs)
 
         # 将数据和离散列作为参数，对CTGAN模型进行训练
-        print("data:",data)
-        print("discrete_columns:",discrete_columns)
+        # print("data:",data)
+        # print("discrete_columns:",discrete_columns)
         model.fit(data, discrete_columns)
         # 保存模型
         if args.save is not None:
@@ -122,7 +118,8 @@ def main():
         write_tsv(sampled, args.metadata, args.output)
     else:
         sampled.to_csv(args.output, index=False)
-    
+    print("gen_data",sampled)
+    print("test_data",test_data)
      # 使用判别器进行预测，并将结果存储在sampled变量中
     pre_result = model.predict(test_data, labels)
     if args.tsv:
